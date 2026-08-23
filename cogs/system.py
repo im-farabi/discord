@@ -38,7 +38,7 @@ BATCH_SIZE = 3
 # ,continue
 # ,recontinue
 #
-CONTROL_CHANNEL_ID = 1533686495712510073
+CONTROL_CHANNEL_ID = 1533686357547946045
 
 
 # If discord.py gets stuck internally waiting on a huge

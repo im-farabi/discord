@@ -5,7 +5,7 @@ import discord
 from discord.ext import commands
 
 
-CHANNEL_ID = 1533686495712510073
+CHANNEL_ID = 1533686357547946045
 
 # Small delay before automatically continuing.
 CONTINUE_DELAY = 2

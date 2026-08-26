@@ -33,6 +33,8 @@ CHANNEL_PATTERNS = [
     "yours",
     "your",
     "urs",
+    "hubs",
+    "sell",
     "clbs",
     "clb",
     "cllbs",

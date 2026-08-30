@@ -8,6 +8,7 @@ import time
 import discord
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from discord.ext import commands
 
 
@@ -18,6 +19,16 @@ from discord.ext import commands
 DATA_FILE = "/data/channels.json"
 
 CYCLE_HOURS = 5
+
+# Fixed daily schedule in Bangladesh / Dhaka time.
+DHAKA_TZ = ZoneInfo("Asia/Dhaka")
+
+SCHEDULE_TIMES = (
+    (7, 30),
+    (12, 30),
+    (18, 30),
+    (22, 30),
+)
 
 SEND_DELAY = 10
 
@@ -38,7 +49,7 @@ BATCH_SIZE = 3
 # ,continue
 # ,recontinue
 #
-CONTROL_CHANNEL_ID = 1533686357547946045
+CONTROL_CHANNEL_ID = 1533686495712510073
 
 
 # If discord.py gets stuck internally waiting on a huge
@@ -63,6 +74,81 @@ def utc_now() -> datetime:
 
     return datetime.now(
         timezone.utc
+    )
+
+
+def dhaka_now() -> datetime:
+
+    return datetime.now(
+        DHAKA_TZ
+    )
+
+
+def next_schedule_slot(
+    now: datetime | None = None
+) -> datetime:
+
+    """
+    Return the next fixed Bangladesh-time schedule slot.
+
+    Daily slots:
+        07:30
+        12:30
+        18:30
+        22:30
+    """
+
+    if now is None:
+
+        now = dhaka_now()
+
+    else:
+
+        now = now.astimezone(
+            DHAKA_TZ
+        )
+
+
+    for hour, minute in SCHEDULE_TIMES:
+
+        candidate = now.replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0
+        )
+
+        if candidate > now:
+
+            return candidate
+
+
+    # All four slots for today have passed.
+    # Return tomorrow's first slot.
+    tomorrow = (
+        now
+        +
+        timedelta(
+            days=1
+        )
+    )
+
+    return tomorrow.replace(
+        hour=SCHEDULE_TIMES[0][0],
+        minute=SCHEDULE_TIMES[0][1],
+        second=0,
+        microsecond=0
+    )
+
+
+def schedule_slot_text(
+    slot: datetime
+) -> str:
+
+    return slot.astimezone(
+        DHAKA_TZ
+    ).strftime(
+        "%H:%M"
     )
 
 
@@ -623,7 +709,8 @@ class AutoPromo(
 
     def _prepare_new_cycle(
         self,
-        reverse: bool
+        reverse: bool,
+        preserve_next_run: bool = False
     ):
 
         self.data = load_data()
@@ -712,11 +799,17 @@ class AutoPromo(
         ] = None
 
 
-        # While we're between batches there is
-        # no automatic next_run yet.
-        self.data[
-            "next_run"
-        ] = None
+        # For a normal scheduled cycle, there is no automatic
+        # next_run while this cycle is between batches.
+        #
+        # For ",start now" we preserve the already-calculated
+        # upcoming fixed Bangladesh-time slot so finishing this
+        # immediate cycle can still use that exact scheduled time.
+        if not preserve_next_run:
+
+            self.data[
+                "next_run"
+            ] = None
 
 
         save_data(
@@ -808,6 +901,132 @@ class AutoPromo(
             )
 
 
+        # ====================================================
+        # FIXED BANGLADESH-TIME START CHOICE
+        # ====================================================
+
+        closest_slot = next_schedule_slot()
+
+        closest_text = schedule_slot_text(
+            closest_slot
+        )
+
+
+        await ctx.send(
+
+            f"⏰ Your next scheduled start is "
+            f"**{closest_text} Bangladesh time**.\n\n"
+            f"Do you want to start **now** too?\n"
+            f"`y` = start now, then continue on the fixed schedule\n"
+            f"`n` = do not start now; wait for **{closest_text}**"
+
+        )
+
+
+        def answer_check(
+            message
+        ):
+
+            return (
+
+                message.author.id
+                ==
+                ctx.author.id
+
+                and
+
+                message.channel.id
+                ==
+                ctx.channel.id
+
+                and
+
+                (
+                    message.content
+                    or ""
+                ).strip().lower()
+                in {
+                    "y",
+                    "n"
+                }
+
+            )
+
+
+        answer = await self.bot.wait_for(
+
+            "message",
+
+            check=answer_check
+
+        )
+
+
+        choice = (
+            answer.content
+            or ""
+        ).strip().lower()
+
+
+        # Recalculate after the answer in case the user happened
+        # to answer after the previously displayed slot passed.
+        if closest_slot <= dhaka_now():
+
+            closest_slot = next_schedule_slot()
+
+            closest_text = schedule_slot_text(
+                closest_slot
+            )
+
+
+        self.data = load_data()
+
+
+        # Re-check state after waiting for y/n so another command
+        # cannot accidentally create a second active scheduler/cycle.
+        if self.data.get(
+            "batch_active"
+        ):
+
+            current = int(
+
+                self.data.get(
+                    "batch_index",
+                    0
+                )
+
+            )
+
+            total = len(
+
+                self.data.get(
+                    "batch_channel_ids",
+                    []
+                )
+
+            )
+
+            return await ctx.send(
+
+                "ℹ️ A promo cycle became active while waiting "
+                "for your answer.\n"
+                f"Progress: **{current}/{total}**"
+
+            )
+
+
+        if self.data.get(
+            "auto"
+        ):
+
+            return await ctx.send(
+
+                "ℹ️ Auto-cycle became active while waiting "
+                "for your answer."
+
+            )
+
+
         self.data[
             "auto"
         ] = True
@@ -823,13 +1042,51 @@ class AutoPromo(
         ] = reverse
 
 
+        # Store the upcoming fixed slot as UTC ISO, exactly like
+        # the old scheduler stored timezone-aware next_run values.
+        self.data[
+            "next_run"
+        ] = closest_slot.astimezone(
+            timezone.utc
+        ).isoformat()
+
+
         save_data(
             self.data
         )
 
 
+        # ====================================================
+        # n = WAIT FOR CLOSEST FIXED SLOT
+        # ====================================================
+
+        if choice == "n":
+
+            await ctx.send(
+
+                f"✅ Auto-cycle scheduled "
+                f"({'reverse' if reverse else 'forward'}).\n"
+                f"First cycle will start at "
+                f"**{closest_text} Bangladesh time**."
+
+            )
+
+
+            self._schedule_loop()
+
+            return
+
+
+        # ====================================================
+        # y = START NOW + KEEP CLOSEST FIXED SLOT
+        # ====================================================
+
         self._prepare_new_cycle(
-            reverse
+
+            reverse,
+
+            preserve_next_run=True
+
         )
 
 
@@ -837,7 +1094,9 @@ class AutoPromo(
 
             f"✅ Auto-cycle started "
             f"({'reverse' if reverse else 'forward'}) "
-            f"— first **{BATCH_SIZE}** channels now."
+            f"— first **{BATCH_SIZE}** channels now.\n"
+            f"Next fixed scheduled start: "
+            f"**{closest_text} Bangladesh time**."
 
         )
 
@@ -849,7 +1108,7 @@ class AutoPromo(
         #
         # _run_next_batch RETURNS afterward.
         #
-        # There is NO wait_for().
+        # There is NO wait_for() for ,continue.
         # There is NO command waiting for ,continue.
         # ====================================================
 
@@ -1624,7 +1883,7 @@ class AutoPromo(
 
 
     # ========================================================
-    # 5-HOUR SCHEDULER
+    # FIXED BANGLADESH-TIME SCHEDULER
     # ========================================================
 
     async def _loop(
@@ -2483,23 +2742,58 @@ class AutoPromo(
         ] = None
 
 
-        self.data[
+        # Keep an already-saved future fixed slot when this
+        # cycle was started immediately with ",start" + "y".
+        #
+        # Otherwise calculate the next one of:
+        # 07:30, 12:30, 18:30, 22:30 Bangladesh time.
+        existing_next_run = self.data.get(
             "next_run"
-        ] = (
+        )
 
-            utc_now()
 
-            +
+        keep_existing = False
 
-            timedelta(
-                hours=CYCLE_HOURS
-            )
 
-        ).isoformat()
+        if existing_next_run:
+
+            try:
+
+                existing_dt = datetime.fromisoformat(
+                    existing_next_run
+                )
+
+                if existing_dt > utc_now():
+
+                    keep_existing = True
+
+            except Exception:
+
+                keep_existing = False
+
+
+        if not keep_existing:
+
+            upcoming_slot = next_schedule_slot()
+
+            self.data[
+                "next_run"
+            ] = upcoming_slot.astimezone(
+                timezone.utc
+            ).isoformat()
 
 
         save_data(
             self.data
+        )
+
+
+        next_run_dt = datetime.fromisoformat(
+            self.data[
+                "next_run"
+            ]
+        ).astimezone(
+            DHAKA_TZ
         )
 
 
@@ -2509,14 +2803,15 @@ class AutoPromo(
 
             f"Processed: **{total}/{total}**\n"
 
-            f"Next automatic cycle in "
-            f"**{CYCLE_HOURS} hours**."
+            f"Next automatic cycle at "
+            f"**{next_run_dt.strftime('%H:%M')} "
+            f"Bangladesh time**."
 
         )
 
 
         # One lightweight scheduler is needed only
-        # for the next 5-hour automatic cycle.
+        # for the next fixed automatic cycle.
         self._schedule_loop()
 
 

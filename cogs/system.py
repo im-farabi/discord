@@ -24,10 +24,10 @@ CYCLE_HOURS = 5
 DHAKA_TZ = ZoneInfo("Asia/Dhaka")
 
 SCHEDULE_TIMES = (
-    (7, 30),
-    (12, 30),
-    (18, 30),
-    (22, 30),
+    (7, 00),
+    (2, 30),
+    (20, 00),
+    (22, 00),
 )
 
 SEND_DELAY = 10
